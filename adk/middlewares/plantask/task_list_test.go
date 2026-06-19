@@ -26,6 +26,51 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// relativePathBackend wraps inMemoryBackend but returns relative filenames
+// from LsInfo, simulating a Backend that doesn't return full paths.
+type relativePathBackend struct {
+	*inMemoryBackend
+	baseDir string
+}
+
+func (b *relativePathBackend) LsInfo(ctx context.Context, req *LsInfoRequest) ([]FileInfo, error) {
+	files, err := b.inMemoryBackend.LsInfo(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	for i := range files {
+		files[i].Path = filepath.Base(files[i].Path)
+	}
+	return files, nil
+}
+
+func TestTaskListToolWithRelativePaths(t *testing.T) {
+	ctx := context.Background()
+	backend := &relativePathBackend{
+		inMemoryBackend: newInMemoryBackend(),
+		baseDir:         "/tmp/tasks",
+	}
+	baseDir := "/tmp/tasks"
+	lock := &sync.Mutex{}
+
+	tool := newTaskListTool(backend, baseDir, lock)
+
+	// Write tasks using full paths (as a real Backend would)
+	task1 := &task{ID: "1", Subject: "Relative Path Task", Status: taskStatusPending}
+	task1JSON, _ := sonic.MarshalString(task1)
+	_ = backend.Write(ctx, &WriteRequest{FilePath: filepath.Join(baseDir, "1.json"), Content: task1JSON})
+
+	task2 := &task{ID: "2", Subject: "Another Task", Status: taskStatusCompleted}
+	task2JSON, _ := sonic.MarshalString(task2)
+	_ = backend.Write(ctx, &WriteRequest{FilePath: filepath.Join(baseDir, "2.json"), Content: task2JSON})
+
+	// LsInfo returns "1.json" and "2.json" (relative), but fix should resolve them correctly
+	result, err := tool.InvokableRun(ctx, `{}`)
+	assert.NoError(t, err)
+	assert.Contains(t, result, "#1 [pending] Relative Path Task")
+	assert.Contains(t, result, "#2 [completed] Another Task")
+}
+
 func TestTaskListTool(t *testing.T) {
 	ctx := context.Background()
 	backend := newInMemoryBackend()
